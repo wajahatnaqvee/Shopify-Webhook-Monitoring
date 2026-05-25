@@ -8,7 +8,7 @@ class WebhookTopicRegistry
      * All defined webhook topics for this application.
      * Each entry is the canonical definition for a single Shopify webhook topic.
      *
-     * Later chunks will add: Metafields, Customers, Inventory, MetaObjects,
+     * Later chunks will add: Metafields, MetaObjects,
      * Checkout, Collections, and Fulfillment groups.
      */
     protected static array $topics = [
@@ -95,6 +95,277 @@ class WebhookTopicRegistry
             'unsupported_reason' => null,
         ],
 
+        // ── Customers ────────────────────────────────────────────────────────
+
+        [
+            'group'              => 'Customers',
+            'action'             => 'create',
+            'title'              => 'Customer Created',
+            'topic_enum'         => 'CUSTOMERS_CREATE',
+            'topic_header'       => 'customers/create',
+            'required_scope'     => 'read_customers',
+            'description'        => 'Fires when a new customer account is created in the Shopify store.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Customers',
+            'action'             => 'update',
+            'title'              => 'Customer Updated',
+            'topic_enum'         => 'CUSTOMERS_UPDATE',
+            'topic_header'       => 'customers/update',
+            'required_scope'     => 'read_customers',
+            'description'        => 'Fires when a customer account is updated in the Shopify store.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Customers',
+            'action'             => 'delete',
+            'title'              => 'Customer Deleted',
+            'topic_enum'         => 'CUSTOMERS_DELETE',
+            'topic_header'       => 'customers/delete',
+            'required_scope'     => 'read_customers',
+            'description'        => 'Fires when a customer account is deleted from the Shopify store.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        // ── Inventory Items ───────────────────────────────────────────────────
+
+        [
+            'group'              => 'Inventory',
+            'action'             => 'create',
+            'title'              => 'Inventory Item Created',
+            'topic_enum'         => 'INVENTORY_ITEMS_CREATE',
+            'topic_header'       => 'inventory_items/create',
+            'required_scope'     => 'read_inventory',
+            'description'        => 'Fires when an inventory item is created.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Inventory',
+            'action'             => 'update',
+            'title'              => 'Inventory Item Updated',
+            'topic_enum'         => 'INVENTORY_ITEMS_UPDATE',
+            'topic_header'       => 'inventory_items/update',
+            'required_scope'     => 'read_inventory',
+            'description'        => 'Fires when an inventory item is updated.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Inventory',
+            'action'             => 'delete',
+            'title'              => 'Inventory Item Deleted',
+            'topic_enum'         => 'INVENTORY_ITEMS_DELETE',
+            'topic_header'       => 'inventory_items/delete',
+            'required_scope'     => 'read_inventory',
+            'description'        => 'Fires when an inventory item is deleted.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        // ── Collections ───────────────────────────────────────────────────────
+
+        [
+            'group'              => 'Collections',
+            'action'             => 'create',
+            'title'              => 'Collection Created',
+            'topic_enum'         => 'COLLECTIONS_CREATE',
+            'topic_header'       => 'collections/create',
+            'required_scope'     => 'read_products',
+            'description'        => 'Fires when a collection is created.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Collections',
+            'action'             => 'update',
+            'title'              => 'Collection Updated',
+            'topic_enum'         => 'COLLECTIONS_UPDATE',
+            'topic_header'       => 'collections/update',
+            'required_scope'     => 'read_products',
+            'description'        => 'Fires when a collection is updated.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Collections',
+            'action'             => 'delete',
+            'title'              => 'Collection Deleted',
+            'topic_enum'         => 'COLLECTIONS_DELETE',
+            'topic_header'       => 'collections/delete',
+            'required_scope'     => 'read_products',
+            'description'        => 'Fires when a collection is deleted.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+        // ── Fulfillment ───────────────────────────────────────────────────────────
+        // Note: 'fulfillments/create' and 'fulfillments/update' are NOT valid Shopify
+        // webhook topics. The correct topics are 'orders/fulfilled' and
+        // 'orders/partially_fulfilled', registered here under the Fulfillment group
+        // so they appear in the Fulfillment dashboard tab.
+
+        [
+            'group'              => 'Fulfillment',
+            'action'             => 'fulfilled',
+            'title'              => 'Order Fulfilled',
+            'topic_enum'         => 'ORDERS_FULFILLED',
+            'topic_header'       => 'orders/fulfilled',
+            'required_scope'     => 'read_orders',
+            'description'        => 'Fires when an order is fully fulfilled.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Fulfillment',
+            'action'             => 'partially_fulfilled',
+            'title'              => 'Order Partially Fulfilled',
+            'topic_enum'         => 'ORDERS_PARTIALLY_FULFILLED',
+            'topic_header'       => 'orders/partially_fulfilled',
+            'required_scope'     => 'read_orders',
+            'description'        => 'Fires when an order is partially fulfilled.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Fulfillment',
+            'action'             => 'create',
+            'title'              => 'Fulfillment Created',
+            'topic_enum'         => 'FULFILLMENTS_CREATE',
+            'topic_header'       => 'fulfillments/create',
+            'required_scope'     => 'read_fulfillments',
+            'description'        => 'Fires when a fulfillment is created.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Fulfillment',
+            'action'             => 'update',
+            'title'              => 'Fulfillment Updated',
+            'topic_enum'         => 'FULFILLMENTS_UPDATE',
+            'topic_header'       => 'fulfillments/update',
+            'required_scope'     => 'read_fulfillments',
+            'description'        => 'Fires when a fulfillment is updated.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        // ── Checkout ─────────────────────────────────────────────────────────────
+        // Note: Checkout webhooks may require the storefront to be enabled and
+        // may behave differently across checkout types (standard, Shop Pay, etc.).
+
+        [
+            'group'              => 'Checkout',
+            'action'             => 'create',
+            'title'              => 'Checkout Created',
+            'topic_enum'         => 'CHECKOUTS_CREATE',
+            'topic_header'       => 'checkouts/create',
+            'required_scope'     => 'read_orders',
+            'description'        => 'Fires when a checkout is created.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Checkout',
+            'action'             => 'update',
+            'title'              => 'Checkout Updated',
+            'topic_enum'         => 'CHECKOUTS_UPDATE',
+            'topic_header'       => 'checkouts/update',
+            'required_scope'     => 'read_orders',
+            'description'        => 'Fires when a checkout is updated.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+
+        [
+            'group'              => 'Checkout',
+            'action'             => 'delete',
+            'title'              => 'Checkout Deleted',
+            'topic_enum'         => 'CHECKOUTS_DELETE',
+            'topic_header'       => 'checkouts/delete',
+            'required_scope'     => 'read_orders',
+            'description'        => 'Fires when a checkout is deleted.',
+            'default_enabled'    => true,
+            'supported'          => true,
+            'unsupported_reason' => null,
+        ],
+        // ── Metaobjects ───────────────────────────────────────────────────────
+        // Shopify REQUIRES a metaobject type handle as a filter when registering
+        // these webhooks. Use the dedicated Metaobjects registration UI which
+        // fetches available types and passes filter: "type:{handle}" automatically.
+
+        [
+            'group'           => 'Metaobjects',
+            'action'          => 'create',
+            'title'           => 'Metaobject Created',
+            'topic_enum'      => 'METAOBJECTS_CREATE',
+            'topic_header'    => 'metaobjects/create',
+            'required_scope'  => 'read_metaobjects',
+            'description'     => 'Fires when a metaobject of the selected type is created.',
+            'default_enabled' => false,
+            'supported'       => true,
+            'unsupported_reason' => null,
+            'requires_filter' => true,
+            'filter_type'     => 'metaobject_type',
+        ],
+
+        [
+            'group'           => 'Metaobjects',
+            'action'          => 'update',
+            'title'           => 'Metaobject Updated',
+            'topic_enum'      => 'METAOBJECTS_UPDATE',
+            'topic_header'    => 'metaobjects/update',
+            'required_scope'  => 'read_metaobjects',
+            'description'     => 'Fires when a metaobject of the selected type is updated.',
+            'default_enabled' => false,
+            'supported'       => true,
+            'unsupported_reason' => null,
+            'requires_filter' => true,
+            'filter_type'     => 'metaobject_type',
+        ],
+
+        [
+            'group'           => 'Metaobjects',
+            'action'          => 'delete',
+            'title'           => 'Metaobject Deleted',
+            'topic_enum'      => 'METAOBJECTS_DELETE',
+            'topic_header'    => 'metaobjects/delete',
+            'required_scope'  => 'read_metaobjects',
+            'description'     => 'Fires when a metaobject of the selected type is deleted.',
+            'default_enabled' => false,
+            'supported'       => true,
+            'unsupported_reason' => null,
+            'requires_filter' => true,
+            'filter_type'     => 'metaobject_type',
+        ],
 
     ];
 
@@ -191,7 +462,7 @@ class WebhookTopicRegistry
     public function recommended(): array
     {
         return collect($this->all())
-            ->filter(fn(array $topic) => ($topic['recommended'] ?? false) === true)
+            ->filter(fn(array $topic) => ($topic['default_enabled'] ?? false) === true)
             ->values()
             ->all();
     }

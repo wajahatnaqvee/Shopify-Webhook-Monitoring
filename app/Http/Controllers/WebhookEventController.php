@@ -37,7 +37,11 @@ class WebhookEventController extends Controller
                 $q->where('topic', 'like', "%{$search}%")
                     ->orWhere('topic_enum', 'like', "%{$search}%")
                     ->orWhere('shop_domain', 'like', "%{$search}%")
-                    ->orWhere('webhook_id', 'like', "%{$search}%");
+                    ->orWhere('webhook_id', 'like', "%{$search}%")
+                    ->orWhere('resource_id', 'like', "%{$search}%")
+                    ->orWhere('resource_gid', 'like', "%{$search}%")
+                    ->orWhere('resource_name', 'like', "%{$search}%")
+                    ->orWhere('resource_identifier', 'like', "%{$search}%");
             });
         })
         ->latest()
@@ -85,10 +89,15 @@ class WebhookEventController extends Controller
             'api_version' => $webhookEvent->api_version,
             'status' => $webhookEvent->status,
             'attempts_count' => $webhookEvent->attempts,
-            'received_at' => $webhookEvent->received_at?->format('Y-m-d H:i:s'),
-            'processed_at' => $webhookEvent->processed_at?->format('Y-m-d H:i:s'),
-            'failed_at' => $webhookEvent->failed_at?->format('Y-m-d H:i:s'),
+            'received_at' => $webhookEvent->received_at?->toISOString(),
+            'processed_at' => $webhookEvent->processed_at?->toISOString(),
+            'failed_at' => $webhookEvent->failed_at?->toISOString(),
             'error_message' => $webhookEvent->error_message,
+            'resource_type'       => $webhookEvent->resource_type,
+            'resource_id'         => $webhookEvent->resource_id,
+            'resource_gid'        => $webhookEvent->resource_gid,
+            'resource_name'       => $webhookEvent->resource_name,
+            'resource_identifier' => $webhookEvent->resource_identifier,
             'payload' => $webhookEvent->payload,
             'headers' => $webhookEvent->headers,
 
@@ -105,8 +114,8 @@ class WebhookEventController extends Controller
                 'status' => $attempt->status,
                 'trigger_type' => $attempt->trigger_type,
                 'error_message' => $attempt->error_message,
-                'started_at' => $attempt->started_at?->format('Y-m-d H:i:s'),
-                'finished_at' => $attempt->finished_at?->format('Y-m-d H:i:s'),
+                'started_at' => $attempt->started_at?->toISOString(),
+                'finished_at' => $attempt->finished_at?->toISOString(),
             ]),
 
             'job_logs' => $webhookEvent->jobLogs->map(fn ($jobLog) => [
@@ -118,9 +127,32 @@ class WebhookEventController extends Controller
                 'duration_ms' => $jobLog->duration_ms,
                 'exception_class' => $jobLog->exception_class,
                 'error_message' => $jobLog->error_message,
-                'started_at' => $jobLog->started_at?->format('Y-m-d H:i:s'),
-                'finished_at' => $jobLog->finished_at?->format('Y-m-d H:i:s'),
+                'started_at' => $jobLog->started_at?->toISOString(),
+                'finished_at' => $jobLog->finished_at?->toISOString(),
             ]),
+
+            'related_events' => $webhookEvent->resource_type && $webhookEvent->resource_id
+                ? WebhookEvent::where('shop_domain', $webhookEvent->shop_domain)
+                    ->where('resource_type', $webhookEvent->resource_type)
+                    ->where('resource_id', $webhookEvent->resource_id)
+                    ->where('id', '!=', $webhookEvent->id)
+                    ->select(['id', 'topic', 'group', 'action', 'status', 'attempts', 'received_at', 'processed_at', 'failed_at'])
+                    ->latest('received_at')
+                    ->take(10)
+                    ->get()
+                    ->map(fn ($e) => [
+                        'id'           => $e->id,
+                        'topic'        => $e->topic,
+                        'group'        => $e->group,
+                        'action'       => $e->action,
+                        'status'       => $e->status,
+                        'attempts'     => $e->attempts,
+                        'received_at'  => $e->received_at?->toISOString(),
+                        'processed_at' => $e->processed_at?->toISOString(),
+                        'failed_at'    => $e->failed_at?->toISOString(),
+                    ])
+                    ->all()
+                : [],
         ],
     ]);
 }

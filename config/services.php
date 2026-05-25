@@ -34,6 +34,11 @@ return [
             'channel' => env('SLACK_BOT_USER_DEFAULT_CHANNEL'),
         ],
     ],
+
+    'shopify_webhooks' => [
+    'monitor_callback_url' => env('WEBHOOK_MONITOR_CALLBACK_URL'),
+    'app_uninstalled_callback_url' => env('APP_UNINSTALLED_CALLBACK_URL'),
+],
    
 
 ];

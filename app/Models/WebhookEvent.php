@@ -25,6 +25,11 @@ class WebhookEvent extends Model
         'processed_at',
         'failed_at',
         'error_message',
+        'resource_type',
+        'resource_id',
+        'resource_gid',
+        'resource_name',
+        'resource_identifier',
     ];
 
     protected $casts = [

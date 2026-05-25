@@ -8,6 +8,7 @@ use App\Services\Shopify\WebhookTopicRegistry;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
+use Illuminate\Validation\Rule;
 use Inertia\Response;
 
 class WebhookSubscriptionController extends Controller
@@ -21,17 +22,74 @@ class WebhookSubscriptionController extends Controller
             ->values()
             ->all();
 
+        $metaobjectEnums = ['METAOBJECTS_CREATE', 'METAOBJECTS_UPDATE', 'METAOBJECTS_DELETE'];
+
         // Load any locally stored subscription rows for this shop.
-        // Keyed by topic_enum so the frontend can do a fast lookup per topic.
-        $subscriptions = $user
-            ? WebhookSubscription::where('user_id', $user->id)
-                ->get()
-                ->keyBy('topic_enum')
+        // Standard topics are keyed by topic_enum for fast lookup.
+        // Metaobject subscriptions are returned as a flat array since multiple
+        // rows can share the same topic_enum (different type filters).
+        $allSubscriptions = $user
+            ? WebhookSubscription::where('user_id', $user->id)->get()
             : collect();
 
+        $subscriptions = $allSubscriptions
+            ->filter(fn(WebhookSubscription $s) => !in_array($s->topic_enum, $metaobjectEnums))
+            ->keyBy('topic_enum');
+
+        // Only show active metaobject subscriptions in the registered list.
+        // Deleted/inactive rows are intentionally excluded so the UI stays clean.
+        $metaobjectSubscriptions = $allSubscriptions
+            ->filter(fn(WebhookSubscription $s) =>
+                in_array($s->topic_enum, $metaobjectEnums) &&
+                $s->status === 'active'
+            )
+            ->values();
+
+        // Load metaobject definitions from Shopify for the Metaobjects tab.
+        $metaobjectDefinitions      = [];
+        $metaobjectDefinitionsError = null;
+
+        if ($user) {
+            try {
+                $defsQuery = <<<'GQL'
+                query GetMetaobjectDefinitions {
+                    metaobjectDefinitions(first: 50) {
+                        edges { node { id name type } }
+                    }
+                }
+                GQL;
+
+                $defsResult = $user->api()->graph($defsQuery);
+
+                if ($defsResult['errors'] === true) {
+                    $metaobjectDefinitionsError = 'Shopify API request failed (HTTP ' . ($defsResult['status'] ?? 'unknown') . ').';
+                } elseif ($defsResult['errors'] !== false && !empty($defsResult['errors'])) {
+                    $msgs = is_array($defsResult['errors'])
+                        ? array_map(fn($e) => is_array($e) ? ($e['message'] ?? json_encode($e)) : (string) $e, $defsResult['errors'])
+                        : [(string) $defsResult['errors']];
+                    $metaobjectDefinitionsError = implode(' | ', $msgs);
+                } else {
+                    $edges = $defsResult['body']->container['data']['metaobjectDefinitions']['edges'] ?? [];
+                    $metaobjectDefinitions = array_map(fn(array $edge) => [
+                        'id'   => $edge['node']['id']   ?? null,
+                        'name' => $edge['node']['name'] ?? null,
+                        'type' => $edge['node']['type'] ?? null,
+                    ], $edges);
+                }
+            } catch (\Throwable $e) {
+                $metaobjectDefinitionsError = $e->getMessage();
+            }
+        }
+
+        $lastSyncedAt = $allSubscriptions->max('last_synced_at');
+
         return Inertia::render('WebhookSubscriptions/Index', [
-            'topics'        => $topics,
-            'subscriptions' => $subscriptions,
+            'topics'                     => $topics,
+            'subscriptions'              => $subscriptions,
+            'metaobjectSubscriptions'    => $metaobjectSubscriptions,
+            'metaobjectDefinitions'      => $metaobjectDefinitions,
+            'metaobjectDefinitionsError' => $metaobjectDefinitionsError,
+            'lastSyncedAt'               => $lastSyncedAt,
         ]);
     }
 
@@ -52,6 +110,10 @@ class WebhookSubscriptionController extends Controller
 
         if (!($topicDef['supported'] ?? true)) {
             return back()->with('error', "Topic {$topicEnum} is not yet supported. " . ($topicDef['unsupported_reason'] ?? ''));
+        }
+
+        if ($topicDef['requires_filter'] ?? false) {
+            return back()->with('error', "Topic {$topicEnum} requires a specific type filter. Use the dedicated Metaobjects registration form.");
         }
 
         $user = $request->user();
@@ -174,8 +236,7 @@ class WebhookSubscriptionController extends Controller
     }
 }
 
-
-public function registerRecommended(Request $request): RedirectResponse
+    public function registerRecommended(Request $request): RedirectResponse
 {
     $user = $request->user();
 
@@ -209,6 +270,11 @@ public function registerRecommended(Request $request): RedirectResponse
 
             if (($topic['supported'] ?? true) === false) {
                 $summary['unsupported']++;
+                continue;
+            }
+
+            if ($topic['requires_filter'] ?? false) {
+                $summary['skipped']++;
                 continue;
             }
 
@@ -262,10 +328,123 @@ public function registerRecommended(Request $request): RedirectResponse
     }
 }
 
+    /**
+     * Fetch metaobject definitions from Shopify and return as JSON.
+     */
+    public function metaobjectDefinitions(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $user = $request->user();
 
+        if ($user === null) {
+            return response()->json(['error' => 'No authenticated shop found.'], 401);
+        }
 
+        $query = <<<'GQL'
+        query GetMetaobjectDefinitions {
+            metaobjectDefinitions(first: 50) {
+                edges {
+                    node {
+                        id
+                        name
+                        type
+                    }
+                }
+            }
+        }
+        GQL;
 
+        try {
+            $result = $user->api()->graph($query);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Shopify API call failed: ' . $e->getMessage()], 500);
+        }
 
+        if ($result['errors'] === true) {
+            return response()->json(['error' => 'Shopify API request failed (HTTP ' . ($result['status'] ?? 'unknown') . ').'], 500);
+        }
 
+        if ($result['errors'] !== false && !empty($result['errors'])) {
+            $errorsRaw = $result['errors'];
+            $msgs = is_array($errorsRaw)
+                ? array_map(fn($e) => is_array($e) ? ($e['message'] ?? json_encode($e)) : (string) $e, $errorsRaw)
+                : [(string) $errorsRaw];
+            $msg = implode(' | ', $msgs);
 
+            if (stripos($msg, 'access denied') !== false || stripos($msg, 'scope') !== false) {
+                $msg .= ' — Missing read_metaobject_definitions or read_metaobjects scope.';
+            }
+
+            return response()->json(['error' => $msg], 422);
+        }
+
+        $bodyArray = $result['body']->container ?? [];
+        $edges     = $bodyArray['data']['metaobjectDefinitions']['edges'] ?? [];
+
+        $definitions = array_map(function (array $edge) {
+            $node = $edge['node'] ?? [];
+            return [
+                'id'   => $node['id']   ?? null,
+                'name' => $node['name'] ?? null,
+                'type' => $node['type'] ?? null,
+            ];
+        }, $edges);
+
+        return response()->json($definitions);
+    }
+
+    /**
+     * Register metaobject webhooks for a specific metaobject type.
+     */
+    public function registerMetaobject(Request $request): RedirectResponse
+    {
+        $request->validate([
+            'metaobject_type' => ['required', 'string', 'max:255'],
+            'topics'          => ['required', 'array', 'min:1'],
+            'topics.*'        => ['required', 'string', Rule::in(['METAOBJECTS_CREATE', 'METAOBJECTS_UPDATE', 'METAOBJECTS_DELETE'])],
+        ]);
+
+        $metaobjectType = trim($request->input('metaobject_type'));
+        $selectedTopics = $request->input('topics');
+        $filter         = "type:{$metaobjectType}";
+
+        $user = $request->user();
+
+        if ($user === null) {
+            return back()->with('error', 'No authenticated shop found.');
+        }
+
+        $service = new ShopifyWebhookSubscriptionService();
+        $summary = ['registered' => 0, 'already_active' => 0, 'failed' => 0, 'errors' => []];
+
+        foreach ($selectedTopics as $topicEnum) {
+            $topicDef = WebhookTopicRegistry::findByEnum($topicEnum);
+
+            if ($topicDef === null) {
+                $summary['failed']++;
+                $summary['errors'][] = "{$topicEnum}: Topic not found in registry.";
+                continue;
+            }
+
+            try {
+                $subscription = $service->register($topicDef, $user, [
+                    'filter'          => $filter,
+                    'metaobject_type' => $metaobjectType,
+                ]);
+
+                if (!$subscription->wasRecentlyCreated && $subscription->status === 'active' && !$subscription->isDirty()) {
+                    $summary['already_active']++;
+                } else {
+                    $summary['registered']++;
+                }
+            } catch (\Throwable $e) {
+                $summary['failed']++;
+                $summary['errors'][] = "{$topicEnum}: " . $e->getMessage();
+            }
+        }
+
+        $message = "Metaobject ({$metaobjectType}) webhooks — registered: {$summary['registered']}, already active: {$summary['already_active']}, failed: {$summary['failed']}.";
+
+        return back()->with($summary['failed'] > 0 ? 'error' : 'success', $message);
+    }
 }
+

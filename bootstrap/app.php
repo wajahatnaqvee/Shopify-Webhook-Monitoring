@@ -41,5 +41,23 @@ return Application::configure(basePath: dirname(__DIR__))
         //
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        // When the session expires while inside the embedded app, the Kyon
+        // VerifyShopify middleware may redirect to /authenticate without a
+        // ?shop= param, causing MissingShopDomainException (HTTP 500).
+        // Instead, return a clear 401 so the frontend can reload.
+        $exceptions->render(function (
+            \Osiset\ShopifyApp\Exceptions\MissingShopDomainException $e,
+            \Illuminate\Http\Request $request
+        ) {
+            if ($request->header('X-Inertia')) {
+                return response()->json([
+                    'message' => 'Your session has expired. Please reload the app from Shopify admin.',
+                ], 401);
+            }
+
+            return redirect('/')->with(
+                'error',
+                'Your session has expired. Please open the app from Shopify admin.'
+            );
+        });
     })->create();

@@ -30,10 +30,16 @@ class HandleInertiaRequests extends Middleware
      */
     public function share(Request $request): array
     {
+        $user = $request->user();
+
         return [
             ...parent::share($request),
             'auth' => [
-                'user' => $request->user(),
+                'user' => $user,
+                // Expose the shop domain so the frontend can attach it as a
+                // header on every Inertia request (prevents MissingShopDomain
+                // errors when the session expires mid-session).
+                'shop_domain' => $user?->name ?? null,
             ],
             'ziggy' => fn() => [
                 ...(new Ziggy)->toArray(),

@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Jobs\AppUninstalledJob;
+use App\Services\Shopify\ShopDataCleanupService;
 use App\Services\Shopify\ShopifyWebhookVerifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -67,18 +67,18 @@ class AppUninstalledWebhookController extends Controller
         }
 
         try {
-            AppUninstalledJob::dispatch(
-                $shopDomain,
-                json_decode($rawBody, true) ?? []
+            app(ShopDataCleanupService::class)->cleanupByShopDomain(
+                shopDomain: $shopDomain,
+                reason: 'app_uninstalled'
             );
 
-            Log::info('APP UNINSTALLED CLEANUP JOB DISPATCHED', [
+            Log::info('APP UNINSTALLED CLEANUP COMPLETED', [
                 'shop_domain' => $shopDomain,
             ]);
 
             return response()->json([
                 'success' => true,
-                'message' => 'App uninstall cleanup queued.',
+                'message' => 'App uninstall cleanup completed.',
             ], 200);
         } catch (\Throwable $e) {
             Log::error('APP UNINSTALLED CLEANUP FAILED', [

@@ -79,6 +79,9 @@ class ShopifyWebhookEventService
             ? 'pending'
             : 'ignored';
 
+        $decodedPayload = json_decode($rawBody, true) ?? [];
+        $resourceMeta   = ResourceMetadataExtractor::extract($topic ?? '', $decodedPayload);
+
         logger('CREATING WEBHOOK EVENT', [
             'shop_domain' => $shopDomain,
             'topic'       => $topic,
@@ -96,11 +99,12 @@ class ShopifyWebhookEventService
             'webhook_id'              => $webhookId,
             'api_version'             => $apiVersion,
             'triggered_at'            => $triggeredAt ? Carbon::parse($triggeredAt) : null,
-            'payload'                 => json_decode($rawBody, true),
+            'payload'                 => $decodedPayload,
             'headers'                 => $request->headers->all(),
             'status'                  => $status,
             'attempts'                => 0,
             'received_at'             => now(),
+            ...$resourceMeta,
         ]);
 
         logger('WEBHOOK EVENT CREATED', [

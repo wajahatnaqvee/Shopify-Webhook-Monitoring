@@ -57,4 +57,10 @@ Route::middleware(['verify.shopify'])->group(function () {
     
     Route::post('/webhook-subscriptions/register-recommended', [WebhookSubscriptionController::class, 'registerRecommended'])
     ->name('webhook-subscriptions.register-recommended');
+
+    Route::get('/webhook-subscriptions/metaobject-definitions', [WebhookSubscriptionController::class, 'metaobjectDefinitions'])
+        ->name('webhook-subscriptions.metaobject-definitions');
+
+    Route::post('/webhook-subscriptions/register-metaobject', [WebhookSubscriptionController::class, 'registerMetaobject'])
+        ->name('webhook-subscriptions.register-metaobject');
 });

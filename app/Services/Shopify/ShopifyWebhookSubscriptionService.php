@@ -78,8 +78,9 @@ class ShopifyWebhookSubscriptionService
             webhookSubscription {
                 id
                 topic
-                uri: callbackUrl
+                callbackUrl
                 format
+                filter
                 includeFields
                 metafieldNamespaces
             }
@@ -90,6 +91,16 @@ class ShopifyWebhookSubscriptionService
         }
     }
     GQL;
+
+    /**
+     * Topics that Shopify GraphQL does not support for webhook subscription.
+     * These fall back to the REST Admin API automatically.
+     */
+    private const REST_FALLBACK_TOPICS = [
+        'checkouts/create',
+        'checkouts/update',
+        'checkouts/delete',
+    ];
 
     /**
      * Register a webhook subscription on Shopify for the given topic/user.
@@ -104,7 +115,10 @@ class ShopifyWebhookSubscriptionService
      * @throws \InvalidArgumentException  When the endpoint URL is invalid.
      * @throws RuntimeException           When Shopify returns userErrors.
      */
-    public function register(array $topicDef, User $user): WebhookSubscription
+    /**
+     * @param  array  $overrides  Optional overrides: 'filter' (string), 'metaobject_type' (string)
+     */
+    public function register(array $topicDef, User $user, array $overrides = []): WebhookSubscription
     {
         // Use a topic-specific endpoint path if defined (e.g. app/uninstalled),
         // otherwise fall back to the general /webhooks/shopify monitor endpoint.
@@ -114,22 +128,36 @@ class ShopifyWebhookSubscriptionService
 
         $this->validateEndpointUrl($endpointUrl);
 
-        // Prevent duplicate active subscription for the same shop + topic + endpoint.
-        $existing = WebhookSubscription::where('user_id', $user->id)
+        // Determine the filter value: explicit override first, then legacy sub_topic fallback.
+        $filterValue = $overrides['filter'] ?? (!empty($topicDef['sub_topic']) ? (string) $topicDef['sub_topic'] : null);
+        $metaobjectType = $overrides['metaobject_type'] ?? null;
+
+        // Prevent duplicate active subscription for the same shop + topic + endpoint + filter.
+        $duplicateQuery = WebhookSubscription::where('user_id', $user->id)
             ->where('topic_enum', $topicDef['topic_enum'])
             ->where('endpoint_url', $endpointUrl)
-            ->where('status', 'active')
-            ->first();
+            ->where('status', 'active');
+
+        if ($filterValue !== null) {
+            $duplicateQuery->where('filter', $filterValue);
+        } else {
+            $duplicateQuery->whereNull('filter');
+        }
+
+        $existing = $duplicateQuery->first();
 
         if ($existing) {
             return $existing;
         }
 
         // Find or initialise a local row so we can save error state if the call fails.
-        $localRow = WebhookSubscription::firstOrNew([
-            'user_id'    => $user->id,
-            'topic_enum' => $topicDef['topic_enum'],
-        ]);
+        // For filter-based topics (e.g. metaobjects), scope the row by filter too so
+        // each type gets its own row rather than overwriting a shared row.
+        $localRowKey = ['user_id' => $user->id, 'topic_enum' => $topicDef['topic_enum']];
+        if ($filterValue !== null) {
+            $localRowKey['filter'] = $filterValue;
+        }
+        $localRow = WebhookSubscription::firstOrNew($localRowKey);
 
         $variables = [
             'topic'               => $topicDef['topic_enum'],
@@ -138,6 +166,11 @@ class ShopifyWebhookSubscriptionService
                 'format'      => 'JSON',
             ],
         ];
+
+        // Pass filter to Shopify when present (required for metaobject webhooks).
+        if ($filterValue !== null) {
+            $variables['webhookSubscription']['filter'] = $filterValue;
+        }
 
         try {
             $result = $user->api()->graph(self::MUTATION, $variables);
@@ -211,7 +244,7 @@ class ShopifyWebhookSubscriptionService
         $userErrors = $payload['userErrors'] ?? [];
         if (!empty($userErrors)) {
             $errorMessages = array_map(function ($e) {
-                // field can be an array path like ["webhookSubscription","callbackUrl"]
+                // field can be an array path like ["webhookSubscription","uri"]
                 $field = $e['field'] ?? null;
                 $fieldStr = is_array($field) ? implode('.', $field) : (string) ($field ?? '');
                 $msg = (string) ($e['message'] ?? '');
@@ -223,6 +256,25 @@ class ShopifyWebhookSubscriptionService
             // topic+URL already exists. Import it from Shopify instead of failing.
             if (stripos($joined, 'already been taken') !== false) {
                 return $this->importExistingFromShopify($localRow, $topicDef, $user, $endpointUrl);
+            }
+
+            // Shopify GraphQL rejects certain topics (e.g. fulfillments/*, checkouts/*).
+            // Fall back to the REST Admin API for these topics.
+            if (
+                stripos($joined, 'cannot create a webhook subscription with the specified topic') !== false
+                && in_array($topicDef['topic_header'], self::REST_FALLBACK_TOPICS, true)
+            ) {
+                return $this->registerViaRest($localRow, $topicDef, $user, $endpointUrl);
+            }
+
+            // Fulfillment webhooks require the read_fulfillments scope.
+            // Give an actionable message so the developer knows exactly what to do.
+            if (str_starts_with($topicDef['topic_header'], 'fulfillments/')) {
+                $scopeMsg = 'Fulfillment webhooks require the read_fulfillments scope. '
+                    . 'Add "read_fulfillments" to SHOPIFY_API_SCOPES in your .env file and reinstall/re-authenticate the app. '
+                    . '(Shopify error: ' . ($joined ?: 'unknown') . ')';
+                $this->markFailed($localRow, $topicDef, $user, $endpointUrl, $scopeMsg);
+                throw new RuntimeException($scopeMsg);
             }
 
             $this->markFailed($localRow, $topicDef, $user, $endpointUrl, $joined ?: 'Unknown Shopify error');
@@ -246,6 +298,9 @@ class ShopifyWebhookSubscriptionService
             'required_scope'           => $topicDef['required_scope'] ?? null,
             'supported'                => $topicDef['supported'] ?? true,
             'unsupported_reason'       => $topicDef['unsupported_reason'] ?? null,
+            'filter'                   => $filterValue,
+            'metaobject_type'          => $metaobjectType,
+            'registration_method'      => 'graphql',
             'status'                   => 'active',
             'last_synced_at'           => now(),
             'last_error'               => null,
@@ -335,6 +390,12 @@ public function registerSystemRequired(User $user): array
             $subscription->last_synced_at = now();
             $subscription->last_error     = null;
             $subscription->save();
+            return;
+        }
+
+        // Route REST-registered subscriptions to the REST delete path.
+        if ($subscription->registration_method === 'rest') {
+            $this->deleteViaRest($user, $subscription);
             return;
         }
 
@@ -429,6 +490,7 @@ public function registerSystemRequired(User $user): array
             'required_scope'          => $topicDef['required_scope'] ?? null,
             'supported'               => $topicDef['supported'] ?? true,
             'unsupported_reason'      => $topicDef['unsupported_reason'] ?? null,
+            'registration_method'     => 'graphql',
             'status'                  => 'active',
             'last_synced_at'          => now(),
             'last_error'              => null,
@@ -519,25 +581,42 @@ public function registerSystemRequired(User $user): array
             'errors'             => [],
         ];
 
-        // Step 1 — Fetch every webhook subscription from Shopify (paginated).
-        $allShopifyNodes = $this->fetchAllShopifySubscriptions($user);
+        // Step 1a — Fetch GraphQL webhook subscriptions (paginated).
+        $graphqlNodes = $this->fetchAllShopifySubscriptions($user);
 
-        // Step 2 — Keep only nodes that point at this app's endpoint.
-        $appNodes = array_values(array_filter(
-            $allShopifyNodes,
+        // Step 1b — Fetch REST webhooks for topics that only register via REST.
+        $restNodes = $this->fetchRestWebhooks($user, $endpointUrl);
+
+        // Step 2 — Filter GraphQL nodes to our endpoint; tag each with 'graphql'.
+        $graphqlAppNodes = array_values(array_filter(
+            $graphqlNodes,
             fn ($node) => rtrim($node['callbackUrl'] ?? '', '/') === rtrim($endpointUrl, '/')
         ));
 
-        $summary['total_from_shopify'] = count($appNodes);
+        // Merge both sources. REST nodes are already filtered to our endpoint and tagged 'rest'.
+        $allNodes = array_merge(
+            array_map(fn ($n) => array_merge($n, ['registration_method' => 'graphql']), $graphqlAppNodes),
+            $restNodes
+        );
 
-        // Build a map: topic_enum => shopify node (one subscription per topic expected).
-        $shopifyByTopic = [];
-        foreach ($appNodes as $node) {
-            $shopifyByTopic[$node['topic']] = $node;
+        $summary['total_from_shopify'] = count($allNodes);
+
+        // Build a map keyed by topic+filter so multiple subscriptions per topic
+        // (e.g. different metaobject type filters) are each handled independently.
+        $shopifyByKey = [];
+        foreach ($allNodes as $node) {
+            $key = $node['topic'] . '||' . ($node['filter'] ?? '');
+            if (!isset($shopifyByKey[$key])) {
+                $shopifyByKey[$key] = $node;
+            }
         }
 
         // Step 3 — Process each Shopify subscription.
-        foreach ($shopifyByTopic as $topicEnum => $node) {
+        foreach ($shopifyByKey as $key => $node) {
+            $topicEnum = $node['topic'];
+            $filterVal = $node['filter'] ?? null;
+            $regMethod = $node['registration_method'] ?? 'graphql';
+
             try {
                 $topicDef = WebhookTopicRegistry::findByEnum($topicEnum);
 
@@ -547,15 +626,27 @@ public function registerSystemRequired(User $user): array
                     continue;
                 }
 
-                // Find any existing local row for this user + topic, regardless of status.
-                $localRow = WebhookSubscription::where('user_id', $user->id)
-                    ->where('topic_enum', $topicEnum)
-                    ->first();
+                // Match by topic + filter so each metaobject type gets its own row.
+                $query = WebhookSubscription::where('user_id', $user->id)
+                    ->where('topic_enum', $topicEnum);
 
-                $isNew = $localRow === null;
+                if ($filterVal !== null) {
+                    $query->where('filter', $filterVal);
+                } else {
+                    $query->whereNull('filter');
+                }
+
+                $localRow = $query->first();
+                $isNew    = $localRow === null;
 
                 if ($isNew) {
                     $localRow = new WebhookSubscription();
+                }
+
+                // Derive metaobject_type from the filter string when applicable.
+                $metaobjectType = null;
+                if ($filterVal && str_starts_with($filterVal, 'type:')) {
+                    $metaobjectType = substr($filterVal, 5);
                 }
 
                 $localRow->fill([
@@ -569,12 +660,14 @@ public function registerSystemRequired(User $user): array
                     'topic_header'            => $topicDef['topic_header'],
                     'endpoint_url'            => $node['callbackUrl'],
                     'format'                  => $node['format'] ?? 'JSON',
-                    'filter'                  => $node['filter'] ?? null,
+                    'filter'                  => $filterVal,
+                    'metaobject_type'         => $metaobjectType,
                     'include_fields'          => !empty($node['includeFields']) ? $node['includeFields'] : null,
                     'metafield_namespaces'    => !empty($node['metafieldNamespaces']) ? $node['metafieldNamespaces'] : null,
                     'required_scope'          => $topicDef['required_scope'] ?? null,
                     'supported'               => $topicDef['supported'] ?? true,
                     'unsupported_reason'      => $topicDef['unsupported_reason'] ?? null,
+                    'registration_method'     => $regMethod,
                     'status'                  => 'active',
                     'last_synced_at'          => now(),
                     'last_error'              => null,
@@ -588,21 +681,24 @@ public function registerSystemRequired(User $user): array
                 }
             } catch (\Throwable $e) {
                 $summary['failed']++;
-                $summary['errors'][] = "Topic {$topicEnum}: " . $e->getMessage();
+                $summary['errors'][] = "Topic {$topicEnum} (filter: {$filterVal}): " . $e->getMessage();
                 \Illuminate\Support\Facades\Log::error('Webhook sync failed for topic', [
-                    'topic' => $topicEnum,
-                    'error' => $e->getMessage(),
+                    'topic'  => $topicEnum,
+                    'filter' => $filterVal,
+                    'error'  => $e->getMessage(),
                 ]);
             }
         }
 
         // Step 4 — Mark local active rows not found on Shopify as missing.
+        // Use the same topic+filter key for matching.
         $activeLocal = WebhookSubscription::where('user_id', $user->id)
             ->where('status', 'active')
             ->get();
 
         foreach ($activeLocal as $localSub) {
-            if (!isset($shopifyByTopic[$localSub->topic_enum])) {
+            $localKey = $localSub->topic_enum . '||' . ($localSub->filter ?? '');
+            if (!isset($shopifyByKey[$localKey])) {
                 $localSub->status         = 'missing_on_shopify';
                 $localSub->last_synced_at = now();
                 $localSub->last_error     = 'This subscription exists locally but was not found on Shopify during sync.';
@@ -671,5 +767,263 @@ public function registerSystemRequired(User $user): array
         } while ($hasNextPage && $after !== null);
 
         return $allNodes;
+    }
+
+    // ── REST fallback helpers ─────────────────────────────────────────────────
+
+    /**
+     * Return the configured Shopify API version string.
+     */
+    private function getApiVersion(): string
+    {
+        return config('shopify-app.api_version', '2025-01');
+    }
+
+    /**
+     * Register a webhook via the REST Admin API.
+     * Called when GraphQL rejects the topic (fulfillments/*, checkouts/*).
+     */
+    private function registerViaRest(
+        WebhookSubscription $localRow,
+        array $topicDef,
+        User $user,
+        string $endpointUrl
+    ): WebhookSubscription {
+        $version = $this->getApiVersion();
+        Log::info('Trying REST fallback registration', [
+            'topic' => $topicDef['topic_header'],
+            'shop'  => $user->name ?? null,
+        ]);
+
+        try {
+            $result = $user->api()->rest('POST', "/admin/api/{$version}/webhooks.json", [
+                'webhook' => [
+                    'topic'   => $topicDef['topic_header'],
+                    'address' => $endpointUrl,
+                    'format'  => 'json',
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            $msg = 'REST fallback registration failed: ' . $e->getMessage();
+            $this->markFailed($localRow, $topicDef, $user, $endpointUrl, $msg);
+            throw new RuntimeException($msg, 0, $e);
+        }
+
+        // HTTP-level failure — $result['body'] is the raw error value (not ResponseAccess).
+        if ($result['errors'] === true) {
+            $statusCode = $result['status'] ?? 0;
+            $errBody    = $result['body'];
+
+            if ($errBody !== null) {
+                $errStr = is_array($errBody) ? json_encode($errBody) : (string) $errBody;
+                if (stripos($errStr, 'already been taken') !== false) {
+                    return $this->importExistingFromShopifyViaRest($localRow, $topicDef, $user, $endpointUrl);
+                }
+                $this->markFailed($localRow, $topicDef, $user, $endpointUrl, 'REST: ' . $errStr);
+                throw new RuntimeException('REST webhook registration failed: ' . $errStr);
+            }
+
+            $msg = "REST API request failed (HTTP {$statusCode}).";
+            $this->markFailed($localRow, $topicDef, $user, $endpointUrl, $msg);
+            throw new RuntimeException($msg);
+        }
+
+        // Success — $result['body'] is a ResponseAccess; access decoded array via ->container.
+        $bodyArray   = $result['body']->container ?? [];
+        $webhookData = $bodyArray['webhook'] ?? [];
+
+        if (empty($webhookData)) {
+            $msg = 'REST API returned empty webhook data.';
+            $this->markFailed($localRow, $topicDef, $user, $endpointUrl, $msg);
+            throw new RuntimeException($msg);
+        }
+
+        $localRow->fill([
+            'user_id'                 => $user->id,
+            'shop_domain'             => $user->getDomain()->toNative(),
+            'shopify_subscription_id' => (string) ($webhookData['id'] ?? ''),
+            'group'                   => $topicDef['group'],
+            'action'                  => $topicDef['action'],
+            'title'                   => $topicDef['title'],
+            'topic_enum'              => $topicDef['topic_enum'],
+            'topic_header'            => $topicDef['topic_header'],
+            'endpoint_url'            => $endpointUrl,
+            'format'                  => 'JSON',
+            'required_scope'          => $topicDef['required_scope'] ?? null,
+            'supported'               => $topicDef['supported'] ?? true,
+            'unsupported_reason'      => $topicDef['unsupported_reason'] ?? null,
+            'registration_method'     => 'rest',
+            'status'                  => 'active',
+            'last_synced_at'          => now(),
+            'last_error'              => null,
+        ]);
+        $localRow->save();
+
+        Log::info('REST webhook registered successfully', [
+            'topic'      => $topicDef['topic_header'],
+            'shopify_id' => $webhookData['id'] ?? null,
+        ]);
+
+        return $localRow;
+    }
+
+    /**
+     * Import an already-existing REST webhook from Shopify (address already taken).
+     */
+    private function importExistingFromShopifyViaRest(
+        WebhookSubscription $localRow,
+        array $topicDef,
+        User $user,
+        string $endpointUrl
+    ): WebhookSubscription {
+        $version = $this->getApiVersion();
+
+        try {
+            $result = $user->api()->rest('GET', "/admin/api/{$version}/webhooks.json", [
+                'topic'   => $topicDef['topic_header'],
+                'address' => $endpointUrl,
+            ]);
+        } catch (\Throwable $e) {
+            $msg = 'Could not import existing REST webhook: ' . $e->getMessage();
+            $this->markFailed($localRow, $topicDef, $user, $endpointUrl, $msg);
+            throw new RuntimeException($msg, 0, $e);
+        }
+
+        $bodyArray = $result['body']->container ?? [];
+        $webhooks  = $bodyArray['webhooks'] ?? [];
+
+        $match = null;
+        foreach ($webhooks as $wh) {
+            if (rtrim($wh['address'] ?? '', '/') === rtrim($endpointUrl, '/')) {
+                $match = $wh;
+                break;
+            }
+        }
+
+        $localRow->fill([
+            'user_id'                 => $user->id,
+            'shop_domain'             => $user->getDomain()->toNative(),
+            'shopify_subscription_id' => $match ? (string) $match['id'] : null,
+            'group'                   => $topicDef['group'],
+            'action'                  => $topicDef['action'],
+            'title'                   => $topicDef['title'],
+            'topic_enum'              => $topicDef['topic_enum'],
+            'topic_header'            => $topicDef['topic_header'],
+            'endpoint_url'            => $endpointUrl,
+            'format'                  => 'JSON',
+            'required_scope'          => $topicDef['required_scope'] ?? null,
+            'supported'               => $topicDef['supported'] ?? true,
+            'unsupported_reason'      => $topicDef['unsupported_reason'] ?? null,
+            'registration_method'     => 'rest',
+            'status'                  => 'active',
+            'last_synced_at'          => now(),
+            'last_error'              => null,
+        ]);
+        $localRow->save();
+
+        return $localRow;
+    }
+
+    /**
+     * Delete a REST-registered webhook from Shopify.
+     */
+    private function deleteViaRest(User $user, WebhookSubscription $subscription): void
+    {
+        $version = $this->getApiVersion();
+        $id      = $subscription->shopify_subscription_id;
+
+        try {
+            $result = $user->api()->rest('DELETE', "/admin/api/{$version}/webhooks/{$id}.json");
+        } catch (\Throwable $e) {
+            $subscription->last_error = 'REST delete failed: ' . $e->getMessage();
+            $subscription->save();
+            throw new RuntimeException('REST webhook deletion failed: ' . $e->getMessage(), 0, $e);
+        }
+
+        $statusCode = $result['status'] ?? 0;
+
+        // 404 means already gone from Shopify — treat as a successful local delete.
+        if ($result['errors'] === true && $statusCode === 404) {
+            $subscription->status         = 'deleted';
+            $subscription->last_synced_at = now();
+            $subscription->last_error     = null;
+            $subscription->save();
+            return;
+        }
+
+        if ($result['errors'] === true) {
+            $msg = "REST API request failed (HTTP {$statusCode}).";
+            $subscription->last_error = $msg;
+            $subscription->save();
+            throw new RuntimeException($msg);
+        }
+
+        // Success (204 No Content typical for DELETE).
+        $subscription->status         = 'deleted';
+        $subscription->last_synced_at = now();
+        $subscription->last_error     = null;
+        $subscription->save();
+    }
+
+    /**
+     * Fetch REST webhook subscriptions from Shopify, returning only those pointing
+     * at this app's endpoint. Each node is tagged with registration_method='rest'
+     * and topic_enum is resolved from the topic_header via the registry.
+     *
+     * Returns an empty array (never throws) so sync degrades gracefully on REST failure.
+     */
+    private function fetchRestWebhooks(User $user, string $endpointUrl): array
+    {
+        $version = $this->getApiVersion();
+        $nodes   = [];
+
+        try {
+            $result = $user->api()->rest('GET', "/admin/api/{$version}/webhooks.json");
+        } catch (\Throwable $e) {
+            Log::warning('REST webhook list failed during sync', ['error' => $e->getMessage()]);
+            return [];
+        }
+
+        if ($result['errors'] === true) {
+            Log::warning('REST webhook list request failed', ['status' => $result['status'] ?? 'unknown']);
+            return [];
+        }
+
+        $bodyArray = $result['body']->container ?? [];
+        $webhooks  = $bodyArray['webhooks'] ?? [];
+
+        foreach ($webhooks as $wh) {
+            // Only include webhooks pointing at our endpoint.
+            if (rtrim($wh['address'] ?? '', '/') !== rtrim($endpointUrl, '/')) {
+                continue;
+            }
+
+            $topicHeader = $wh['topic'] ?? null;
+
+            // Only care about topics in our REST fallback list.
+            if (!in_array($topicHeader, self::REST_FALLBACK_TOPICS, true)) {
+                continue;
+            }
+
+            $topicDef = WebhookTopicRegistry::findByHeader($topicHeader);
+            if ($topicDef === null) {
+                continue;
+            }
+
+            $nodes[] = [
+                'id'                  => (string) ($wh['id'] ?? ''),
+                'topic'               => $topicDef['topic_enum'],
+                'callbackUrl'         => $wh['address'] ?? null,
+                'filter'              => null,
+                'format'              => strtoupper($wh['format'] ?? 'JSON'),
+                'includeFields'       => [],
+                'metafieldNamespaces' => [],
+                'createdAt'           => $wh['created_at'] ?? null,
+                'updatedAt'           => $wh['updated_at'] ?? null,
+                'registration_method' => 'rest',
+            ];
+        }
+
+        return $nodes;
     }
 }

@@ -21,8 +21,8 @@ max_attempts=12
 attempt=1
 until php artisan migrate --force --no-interaction; do
 	if [ "$attempt" -ge "$max_attempts" ]; then
-		echo "Migration failed after $max_attempts attempts."
-		exit 1
+		echo "Migration failed after $max_attempts attempts. Continuing startup so service can respond."
+		break
 	fi
 
 	echo "Migration attempt $attempt failed. Retrying in 5 seconds..."
@@ -32,9 +32,9 @@ done
 
 # Now cache with real runtime env values
 echo "Optimizing application..."
-php artisan config:cache
-php artisan route:cache
-php artisan view:cache
+php artisan config:cache || echo "config:cache failed, continuing"
+php artisan route:cache || echo "route:cache failed, continuing"
+php artisan view:cache || echo "view:cache failed, continuing"
 
 # Start the web server on Railway's assigned port
 echo "Starting web server on port $PORT..."

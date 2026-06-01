@@ -1,2 +1,2 @@
-web: php artisan serve --host=0.0.0.0 --port=$PORT
+web: sh start.sh
 queue: php artisan queue:work --tries=3 --timeout=90

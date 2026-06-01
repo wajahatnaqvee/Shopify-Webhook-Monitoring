@@ -4,7 +4,7 @@ client_id = "d24b5843b7042c620107939e3dee6b12"
 name = "Webhook Monitor"
 handle = "swishtag-webhook-monitor"
 
-application_url = "https://wajahat.xoarhigh.info"
+application_url = "https://shopify-webhook-monitoring-production.up.railway.app"
 embedded = true
 
 [webhooks]
@@ -17,4 +17,4 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://wajahat.xoarhigh.info/authenticate" ]
+redirect_urls = [ "https://shopify-webhook-monitoring-production.up.railway.app/authenticate" ]

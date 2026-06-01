@@ -1,0 +1,19 @@
+# Railway ignore file - exclude files from deployment
+.git
+.github
+.vscode
+.idea
+node_modules
+tests
+storage/app/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+storage/logs/*
+.env.example
+.editorconfig
+.gitignore
+.gitattributes
+phpunit.xml
+README.md
+*.log

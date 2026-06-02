@@ -18,6 +18,8 @@ return new class extends Migration
             // Shopify-side reference
             $table->string('shopify_subscription_id')->nullable();
 
+            
+
             // Topic classification
             $table->string('group')->nullable();
             $table->string('action')->nullable();
